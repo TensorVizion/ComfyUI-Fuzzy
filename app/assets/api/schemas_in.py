@@ -59,6 +59,12 @@ class ListAssetsQuery(BaseModel):
 
     limit: conint(ge=1, le=500) = 20
     offset: conint(ge=0) = 0
+    
+    # Cursor-based pagination
+    cursor: str | None = None
+    
+    # Fuzzy search
+    fuzzy_search: str | None = Field(default=None, description="Fuzzy search query for asset names")
 
     sort: Literal["name", "created_at", "updated_at", "size", "last_access_time"] = (
         "created_at"
@@ -241,6 +247,9 @@ class UploadAssetSpec(BaseModel):
     - hash: optional canonical 'blake3:<hex>' for validation / fast-path
     - mime_type: optional MIME type override
     - preview_id: optional asset_reference ID for preview
+    - chunk_number: for chunked uploads (1-based)
+    - total_chunks: total number of chunks in chunked upload
+    - upload_id: unique identifier for chunked upload session
 
     Files are stored using the content hash as filename stem.
     """
@@ -253,6 +262,9 @@ class UploadAssetSpec(BaseModel):
     hash: str | None = Field(default=None)
     mime_type: str | None = Field(default=None)
     preview_id: str | None = Field(default=None)  # references an asset_reference id
+    chunk_number: int | None = Field(default=None, ge=1, description="Chunk number for chunked uploads")
+    total_chunks: int | None = Field(default=None, ge=1, description="Total chunks for chunked uploads")
+    upload_id: str | None = Field(default=None, description="Upload session ID for chunked uploads")
 
     @field_validator("hash", mode="before")
     @classmethod
