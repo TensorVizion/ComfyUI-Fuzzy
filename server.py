@@ -253,29 +253,63 @@ class PromptServer():
         self.client_id = None
 
         self.on_prompt_handlers = []
+        self.heartbeat_interval = 30  # seconds
+        self.heartbeat_tasks = {}
+
+        async def heartbeat_task(sid: str, ws: web.WebSocketResponse):
+            """Send periodic heartbeat pings to keep connection alive."""
+            try:
+                while True:
+                    await asyncio.sleep(self.heartbeat_interval)
+                    if ws.closed:
+                        break
+                    await ws.ping()
+                    logging.debug(f"Heartbeat sent to client {sid}")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logging.warning(f"Heartbeat failed for client {sid}: {e}")
 
         @routes.get('/ws')
         async def websocket_handler(request):
-            ws = web.WebSocketResponse()
+            ws = web.WebSocketResponse(heartbeat=self.heartbeat_interval)
             await ws.prepare(request)
             sid = request.rel_url.query.get('clientId', '')
+            
+            # Handle reconnection
+            is_reconnect = False
             if sid:
                 # Reusing existing session, remove old
+                if sid in self.sockets:
+                    is_reconnect = True
+                    logging.info(f"Client {sid} reconnecting")
                 self.sockets.pop(sid, None)
             else:
                 sid = uuid.uuid4().hex
 
             # Store WebSocket for backward compatibility
             self.sockets[sid] = ws
-            # Store metadata separately
-            self.sockets_metadata[sid] = {"feature_flags": {}}
+            # Store metadata separately with connection state
+            self.sockets_metadata[sid] = {
+                "feature_flags": {},
+                "connected_at": time.time(),
+                "is_reconnect": is_reconnect
+            }
+
+            # Start heartbeat task
+            heartbeat = asyncio.create_task(heartbeat_task(sid, ws))
+            self.heartbeat_tasks[sid] = heartbeat
 
             try:
                 # Send initial state to the new client
                 await self.send("status", {"status": self.get_queue_info(), "sid": sid}, sid)
+                
                 # On reconnect if we are the currently executing client send the current node
                 if self.client_id == sid and self.last_node_id is not None:
                     await self.send("executing", { "node": self.last_node_id }, sid)
+                
+                # Send connection acknowledgment
+                await self.send("connected", {"sid": sid, "reconnected": is_reconnect}, sid)
 
                 # Flag to track if we've received the first message
                 first_message = True
@@ -283,6 +317,8 @@ class PromptServer():
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.ERROR:
                         logging.warning('ws connection closed with exception %s' % ws.exception())
+                    elif msg.type == aiohttp.WSMsgType.PONG:
+                        logging.debug(f"Pong received from client {sid}")
                     elif msg.type == aiohttp.WSMsgType.TEXT:
                         try:
                             data = json.loads(msg.data)
@@ -310,8 +346,14 @@ class PromptServer():
                         except Exception as e:
                             logging.error(f"Error processing WebSocket message: {e}")
             finally:
+                # Cancel heartbeat task
+                if sid in self.heartbeat_tasks:
+                    self.heartbeat_tasks[sid].cancel()
+                    del self.heartbeat_tasks[sid]
+                
                 self.sockets.pop(sid, None)
                 self.sockets_metadata.pop(sid, None)
+                logging.info(f"Client {sid} disconnected")
             return ws
 
         @routes.get("/")
