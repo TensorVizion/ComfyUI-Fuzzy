@@ -24,6 +24,12 @@ class Asset(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_access_time: datetime | None = None
+    
+    # Accessibility metadata
+    accessibility: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Accessibility information for screen readers and assistive technologies"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -40,6 +46,7 @@ class AssetsList(BaseModel):
     assets: list[Asset]
     total: int
     has_more: bool
+    next_cursor: str | None = None
 
 
 class TagUsage(BaseModel):
